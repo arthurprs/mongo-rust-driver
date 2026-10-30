@@ -1,4 +1,4 @@
-use std::{collections::HashMap, marker::PhantomData};
+use std::{borrow::Borrow, collections::HashMap, marker::PhantomData, sync::Arc};
 
 use crate::{
     bson::{Bson, Document},
@@ -37,6 +37,19 @@ impl Client {
         }
         BulkWrite::new(self, models_vec)
     }
+
+    /// Executes shared write models without cloning their payloads into the driver.
+    ///
+    /// This is useful when retrying a subset of a large batch: callers can clone `Arc` handles and
+    /// the driver borrows each model while encoding the request.
+    #[deeplink]
+    #[options_doc(bulk_write)]
+    pub fn bulk_write_shared(
+        &self,
+        models: impl IntoIterator<Item = Arc<WriteModel>>,
+    ) -> BulkWrite<'_, SummaryBulkWriteResult> {
+        BulkWrite::new_shared(self, models.into_iter().collect())
+    }
 }
 
 #[cfg(feature = "sync")]
@@ -61,13 +74,29 @@ impl crate::sync::Client {
     ) -> BulkWrite<'_, SummaryBulkWriteResult> {
         self.async_client.bulk_write(models)
     }
+
+    /// Executes shared write models without cloning their payloads into the driver.
+    #[deeplink]
+    #[options_doc(bulk_write, "run")]
+    pub fn bulk_write_shared(
+        &self,
+        models: impl IntoIterator<Item = Arc<WriteModel>>,
+    ) -> BulkWrite<'_, SummaryBulkWriteResult> {
+        self.async_client.bulk_write_shared(models)
+    }
 }
 
-/// Performs multiple write operations. Construct with [`Client::bulk_write`].
+enum BulkWriteModels {
+    Owned(Vec<WriteModel>),
+    Shared(Vec<Arc<WriteModel>>),
+}
+
+/// Performs multiple write operations. Construct with [`Client::bulk_write`] or
+/// [`Client::bulk_write_shared`].
 #[must_use]
 pub struct BulkWrite<'a, R> {
     client: &'a Client,
-    models: Vec<WriteModel>,
+    models: BulkWriteModels,
     options: Option<BulkWriteOptions>,
     session: Option<&'a mut ClientSession>,
     _phantom: PhantomData<R>,
@@ -100,6 +129,14 @@ where
     }
 
     fn new(client: &'a Client, models: Vec<WriteModel>) -> Self {
+        Self::new_with_models(client, BulkWriteModels::Owned(models))
+    }
+
+    fn new_shared(client: &'a Client, models: Vec<Arc<WriteModel>>) -> Self {
+        Self::new_with_models(client, BulkWriteModels::Shared(models))
+    }
+
+    fn new_with_models(client: &'a Client, models: BulkWriteModels) -> Self {
         Self {
             client,
             models,
@@ -117,22 +154,31 @@ where
     }
 
     async fn execute_inner(mut self) -> Result<R> {
+        match std::mem::replace(&mut self.models, BulkWriteModels::Owned(Vec::new())) {
+            BulkWriteModels::Owned(models) => self.execute_models(&models).await,
+            BulkWriteModels::Shared(models) => self.execute_models(&models).await,
+        }
+    }
+
+    async fn execute_models<M>(&mut self, models: &[M]) -> Result<R>
+    where
+        M: Borrow<WriteModel> + Sync,
+    {
         let mut total_attempted = 0;
         let mut execution_status = ExecutionStatus::None;
 
-        while total_attempted < self.models.len()
-            && execution_status.should_continue(self.is_ordered())
+        while total_attempted < models.len() && execution_status.should_continue(self.is_ordered())
         {
-            let mut operation = BulkWriteOperation::new(
+            let mut operation: BulkWriteOperation<R, M> = BulkWriteOperation::new(
                 self.client.clone(),
-                &self.models[total_attempted..],
+                &models[total_attempted..],
                 total_attempted,
                 self.options.as_ref(),
             )
             .await;
             let result = self
                 .client
-                .execute_operation::<BulkWriteOperation<R>>(
+                .execute_operation::<BulkWriteOperation<R, M>>(
                     &mut operation,
                     self.session.as_deref_mut(),
                 )

@@ -1,6 +1,6 @@
 mod server_responses;
 
-use std::{collections::HashMap, marker::PhantomData};
+use std::{borrow::Borrow, collections::HashMap, marker::PhantomData};
 
 use futures_core::TryStream;
 use futures_util::{FutureExt, TryStreamExt};
@@ -38,13 +38,13 @@ use server_responses::*;
 const NS_INFO: &CStr = cstr!("nsInfo");
 const OPS: &CStr = cstr!("ops");
 
-pub(crate) struct BulkWrite<'a, R>
+pub(crate) struct BulkWrite<'a, R, M = WriteModel>
 where
     R: BulkWriteResult,
 {
     client: Client,
     encrypted: bool,
-    models: &'a [WriteModel],
+    models: &'a [M],
     offset: usize,
     options: Option<&'a BulkWriteOptions>,
     /// The _ids of the inserted documents. This value is populated in `build`.
@@ -54,16 +54,17 @@ where
     _phantom: PhantomData<R>,
 }
 
-impl<'a, R> BulkWrite<'a, R>
+impl<'a, R, M> BulkWrite<'a, R, M>
 where
     R: BulkWriteResult,
+    M: Borrow<WriteModel> + Sync,
 {
     pub(crate) async fn new(
         client: Client,
-        models: &'a [WriteModel],
+        models: &'a [M],
         offset: usize,
         options: Option<&'a BulkWriteOptions>,
-    ) -> BulkWrite<'a, R> {
+    ) -> BulkWrite<'a, R, M> {
         let encrypted = client.should_auto_encrypt().await;
         Self {
             client,
@@ -217,7 +218,7 @@ where
     }
 
     fn get_model(&self, index: usize) -> Result<&WriteModel> {
-        self.models.get(index).ok_or_else(|| {
+        self.models.get(index).map(Borrow::borrow).ok_or_else(|| {
             ErrorKind::InvalidResponse {
                 message: format!("invalid operation index returned from bulkWrite: {index}"),
             }
@@ -257,6 +258,7 @@ where
         let mut current_size = Checked::new(0);
 
         for (i, model) in self.models.iter().take(max_operations).enumerate() {
+            let model = model.borrow();
             let (namespace_index, namespace_size) =
                 namespace_info.get_index_and_size(model.namespace())?;
             let (model_document, inserted_id) = model.get_ops_document(namespace_index)?;
@@ -347,9 +349,10 @@ where
     }
 }
 
-impl<R> BaseOperation for BulkWrite<'_, R>
+impl<R, M> BaseOperation for BulkWrite<'_, R, M>
 where
     R: BulkWriteResult,
+    M: Borrow<WriteModel> + Sync,
 {
     type O = R;
 
@@ -509,7 +512,11 @@ where
     }
 
     fn retryability(&self, options: &ClientOptions) -> Retryability {
-        if self.models.iter().any(|model| model.multi() == Some(true)) {
+        if self
+            .models
+            .iter()
+            .any(|model| model.borrow().multi() == Some(true))
+        {
             Retryability::None
         } else {
             Retryability::write(options)
@@ -535,9 +542,12 @@ where
     type Otel = crate::otel::Witness<Self>;
 }
 
-impl<R: BulkWriteResult> OperationImpl for BulkWrite<'_, R> {
+impl<R: BulkWriteResult, M: Borrow<WriteModel> + Sync> OperationImpl for BulkWrite<'_, R, M> {
     type Kind = Base;
 }
 
 #[cfg(feature = "opentelemetry")]
-impl<R: BulkWriteResult> crate::otel::OtelInfoDefaults for BulkWrite<'_, R> {}
+impl<R: BulkWriteResult, M: Borrow<WriteModel> + Sync> crate::otel::OtelInfoDefaults
+    for BulkWrite<'_, R, M>
+{
+}
