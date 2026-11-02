@@ -146,41 +146,53 @@ where
         }
     }
 
-    fn is_ordered(&self) -> bool {
-        self.options
-            .as_ref()
-            .and_then(|options| options.ordered)
-            .unwrap_or(true)
-    }
+    async fn execute_inner(self) -> Result<R> {
+        let Self {
+            client,
+            models,
+            options,
+            session,
+            ..
+        } = self;
 
-    async fn execute_inner(mut self) -> Result<R> {
-        match std::mem::replace(&mut self.models, BulkWriteModels::Owned(Vec::new())) {
-            BulkWriteModels::Owned(models) => self.execute_models(&models).await,
-            BulkWriteModels::Shared(models) => self.execute_models(&models).await,
+        match models {
+            BulkWriteModels::Owned(models) => {
+                Self::execute_models(client, options, session, &models).await
+            }
+            BulkWriteModels::Shared(models) => {
+                Self::execute_models(client, options, session, &models).await
+            }
         }
     }
 
-    async fn execute_models<M>(&mut self, models: &[M]) -> Result<R>
+    async fn execute_models<M>(
+        client: &Client,
+        options: Option<BulkWriteOptions>,
+        mut session: Option<&mut ClientSession>,
+        models: &[M],
+    ) -> Result<R>
     where
         M: Borrow<WriteModel> + Sync,
     {
+        let ordered = options
+            .as_ref()
+            .and_then(|options| options.ordered)
+            .unwrap_or(true);
         let mut total_attempted = 0;
         let mut execution_status = ExecutionStatus::None;
 
-        while total_attempted < models.len() && execution_status.should_continue(self.is_ordered())
-        {
+        while total_attempted < models.len() && execution_status.should_continue(ordered) {
             let mut operation: BulkWriteOperation<R, M> = BulkWriteOperation::new(
-                self.client.clone(),
+                client.clone(),
                 &models[total_attempted..],
                 total_attempted,
-                self.options.as_ref(),
+                options.as_ref(),
             )
             .await;
-            let result = self
-                .client
+            let result = client
                 .execute_operation::<BulkWriteOperation<R, M>>(
                     &mut operation,
-                    self.session.as_deref_mut(),
+                    session.as_deref_mut(),
                 )
                 .await;
             total_attempted += operation.n_attempted;

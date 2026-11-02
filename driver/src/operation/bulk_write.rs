@@ -38,7 +38,7 @@ use server_responses::*;
 const NS_INFO: &CStr = cstr!("nsInfo");
 const OPS: &CStr = cstr!("ops");
 
-pub(crate) struct BulkWrite<'a, R, M = WriteModel>
+pub(crate) struct BulkWrite<'a, R, M>
 where
     R: BulkWriteResult,
 {
