@@ -1,9 +1,9 @@
-use std::{collections::HashMap, time::Duration};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use crate::{
-    bson::{doc, Document},
+    bson::{doc, Bson, Document},
     error::{bulk_write::PartialBulkWriteResult, BulkWriteError, ErrorKind},
-    options::{InsertOneModel, UpdateOneModel},
+    options::{InsertOneModel, UpdateOneModel, WriteModel},
     results::UpdateResult,
     test::{
         get_client_options,
@@ -227,6 +227,61 @@ async fn write_error_batches() {
 
     let command_started_events = client.events.get_command_started_events(&["bulkWrite"]);
     assert_eq!(command_started_events.len(), 1);
+}
+
+#[tokio::test]
+async fn shared_bulk_write_preserves_indices_across_batches() {
+    if server_version_lt(8, 0).await {
+        log_uncaptured(
+            "skipping shared_bulk_write_preserves_indices_across_batches: bulkWrite requires 8.0+",
+        );
+        return;
+    }
+
+    let client = Client::for_test().await;
+    let collection = client
+        .database("db")
+        .collection::<Document>("shared_bulk_write_indices");
+    collection.drop().await.unwrap();
+    let batch_size = get_max_write_batch_size().await;
+    let batch_size_id = i64::try_from(batch_size).unwrap();
+    collection
+        .insert_many([doc! { "_id": 1_i64 }, doc! { "_id": batch_size_id }])
+        .await
+        .unwrap();
+    let models: Vec<Arc<WriteModel>> = (0..batch_size + 2)
+        .map(|index| {
+            Arc::new(
+                InsertOneModel::builder()
+                    .namespace(collection.namespace())
+                    .document(doc! { "_id": i64::try_from(index).unwrap() })
+                    .build()
+                    .into(),
+            )
+        })
+        .collect();
+    let error = client
+        .bulk_write_shared(models)
+        .ordered(false)
+        .verbose_results()
+        .await
+        .unwrap_err();
+    let ErrorKind::BulkWrite(error) = *error.kind else {
+        panic!("expected a bulk write error");
+    };
+    let mut failed_indices: Vec<_> = error.write_errors.keys().copied().collect();
+    failed_indices.sort_unstable();
+    assert_eq!(failed_indices, vec![1, batch_size]);
+    let Some(PartialBulkWriteResult::Verbose(result)) = error.partial_result else {
+        panic!("expected verbose partial results");
+    };
+    assert_eq!(result.summary.inserted_count, batch_size_id);
+    assert_eq!(result.insert_results.len(), batch_size);
+    assert_eq!(result.insert_results[&0].inserted_id, Bson::Int64(0));
+    assert_eq!(
+        result.insert_results[&(batch_size + 1)].inserted_id,
+        Bson::Int64(batch_size_id + 1)
+    );
 }
 
 // CRUD prose test 7
