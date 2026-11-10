@@ -383,6 +383,16 @@ impl Client {
         self.inner.options.selection_criteria.as_ref()
     }
 
+    /// Returns the latest cluster timestamp observed by this client's topology.
+    /// Completed commands publish their cluster time before returning to the caller.
+    pub fn observed_cluster_time(&self) -> Option<crate::bson::Timestamp> {
+        self.inner
+            .topology
+            .watcher()
+            .cluster_time()
+            .map(|time| time.cluster_time)
+    }
+
     /// Gets the default read concern the `Client` uses for operations.
     pub fn read_concern(&self) -> Option<&ReadConcern> {
         self.inner.options.read_concern.as_ref()

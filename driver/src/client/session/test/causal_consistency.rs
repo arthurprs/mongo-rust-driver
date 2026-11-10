@@ -497,3 +497,26 @@ async fn cluster_time_sent_in_commands() {
     let (started, _) = client.events.get_successful_command_execution("find");
     started.command.get_document("$clusterTime").unwrap();
 }
+
+#[tokio::test]
+async fn observed_cluster_time_is_published_before_completion() {
+    if topology_is_standalone().await {
+        return;
+    }
+    let client = Client::for_test().await;
+    let initial = client.observed_cluster_time();
+    let coll = client
+        .create_fresh_collection("observed_cluster_time", "items", None)
+        .await;
+    let mut session = client.start_session().await.unwrap();
+    coll.insert_one(doc! { "_id": 1 })
+        .session(&mut session)
+        .await
+        .unwrap();
+    let after_write = client.observed_cluster_time().unwrap();
+    assert!(after_write >= session.operation_time().unwrap());
+    assert!(initial.is_none_or(|initial| after_write >= initial));
+    coll.find_one(doc! {}).session(&mut session).await.unwrap();
+    assert!(client.observed_cluster_time().unwrap() >= after_write);
+    assert!(client.observed_cluster_time().unwrap() >= session.operation_time().unwrap());
+}
