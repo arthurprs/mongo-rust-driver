@@ -393,6 +393,18 @@ impl Client {
             .map(|time| time.cluster_time)
     }
 
+    /// Returns whether the client has observed a standalone server.
+    /// Unknown topologies and direct connections to replica-set members return false.
+    pub fn is_standalone(&self) -> bool {
+        let topology = self.inner.topology.latest();
+        topology.description.topology_type == TopologyType::Single
+            && topology
+                .description
+                .servers
+                .values()
+                .any(|server| server.server_type == crate::sdam::ServerType::Standalone)
+    }
+
     /// Gets the default read concern the `Client` uses for operations.
     pub fn read_concern(&self) -> Option<&ReadConcern> {
         self.inner.options.read_concern.as_ref()

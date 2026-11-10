@@ -520,3 +520,19 @@ async fn observed_cluster_time_is_published_before_completion() {
     assert!(client.observed_cluster_time().unwrap() >= after_write);
     assert!(client.observed_cluster_time().unwrap() >= session.operation_time().unwrap());
 }
+
+#[tokio::test]
+async fn observed_standalone_matches_server_topology() {
+    let client = Client::for_test().await;
+    client
+        .database("admin")
+        .run_command(doc! { "ping": 1 })
+        .await
+        .unwrap();
+    assert_eq!(client.is_standalone(), topology_is_standalone().await);
+    if client.is_standalone() {
+        assert!(client.observed_cluster_time().is_none());
+    } else {
+        assert!(client.observed_cluster_time().is_some());
+    }
+}
