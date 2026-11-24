@@ -8,9 +8,7 @@ use self::options::FindAndModifyOptions;
 use crate::{
     bson::{doc, rawdoc, Document, RawBson, RawDocumentBuf},
     bson_compat::{cstr, deserialize_from_slice, CStr},
-    bson_util,
     cmap::{Command, RawCommandResponse, StreamDescription},
-    coll::options::UpdateModifications,
     error::{Error, Result},
     operation::{
         append_options_to_raw_document,
@@ -41,12 +39,9 @@ impl<T: DeserializeOwned> FindAndModify<T> {
         modification: Modification,
         options: Option<FindAndModifyOptions>,
     ) -> Result<Self> {
-        if let Modification::Update(UpdateOrReplace::UpdateModifications(
-            UpdateModifications::Document(d),
-        )) = &modification
-        {
-            bson_util::update_document_check(d)?;
-        };
+        if let Modification::Update(UpdateOrReplace::UpdateModifications(update)) = &modification {
+            update.validate()?;
+        }
         Ok(Self {
             target,
             query,

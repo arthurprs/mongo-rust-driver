@@ -143,9 +143,7 @@ impl<'a> Action for Update<'a> {
     type Future = UpdateFuture;
 
     async fn execute(self) -> Result<UpdateResult> {
-        if let UpdateModifications::Document(d) = &self.update {
-            crate::bson_util::update_document_check(d)?;
-        }
+        self.update.validate()?;
         let op = Op::with_update(
             self.coll.clone(),
             self.query,

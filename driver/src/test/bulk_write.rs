@@ -1,7 +1,7 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use crate::{
-    bson::{doc, Bson, Document},
+    bson::{doc, rawdoc, Bson, Document},
     error::{bulk_write::PartialBulkWriteResult, BulkWriteError, ErrorKind},
     options::{InsertOneModel, UpdateOneModel, WriteModel},
     results::UpdateResult,
@@ -229,6 +229,37 @@ async fn write_error_batches() {
     assert_eq!(command_started_events.len(), 1);
 }
 
+#[test]
+fn raw_update_matches_typed_bulk_operation() {
+    let base = UpdateOneModel::builder()
+        .namespace(Namespace::new("db", "collection"))
+        .filter(doc! { "_id": 1 })
+        .upsert(true)
+        .sort(doc! { "rank": 1 });
+    let raw = base
+        .clone()
+        .update(rawdoc! { "$set": { "value": 2 } })
+        .build();
+    let typed = base.update(doc! { "$set": { "value": 2 } }).build();
+
+    let encode = |model: UpdateOneModel| WriteModel::from(model).get_ops_document(7);
+    let (raw, _) = encode(raw).unwrap();
+    let (typed, _) = encode(typed).unwrap();
+    assert_eq!(raw.as_bytes(), typed.as_bytes());
+
+    for update in [rawdoc! {}, rawdoc! { "value": 2 }] {
+        let model = UpdateOneModel::builder()
+            .namespace(Namespace::new("db", "collection"))
+            .filter(doc! {})
+            .update(update)
+            .build();
+        assert!(matches!(
+            *encode(model).unwrap_err().kind,
+            ErrorKind::InvalidArgument { .. }
+        ));
+    }
+}
+
 #[tokio::test]
 async fn shared_bulk_write_preserves_indices_across_batches() {
     if server_version_lt(8, 0).await {
@@ -251,6 +282,17 @@ async fn shared_bulk_write_preserves_indices_across_batches() {
         .unwrap();
     let models: Vec<Arc<WriteModel>> = (0..batch_size + 2)
         .map(|index| {
+            if index == batch_size {
+                return Arc::new(
+                    UpdateOneModel::builder()
+                        .namespace(collection.namespace())
+                        .filter(doc! { "_id": batch_size_id, "missing": true })
+                        .update(rawdoc! { "$set": { "updated": true } })
+                        .upsert(true)
+                        .build()
+                        .into(),
+                );
+            }
             Arc::new(
                 InsertOneModel::builder()
                     .namespace(collection.namespace())

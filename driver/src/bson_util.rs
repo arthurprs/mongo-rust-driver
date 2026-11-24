@@ -114,8 +114,8 @@ pub(crate) fn first_key(document: &Document) -> Option<&str> {
     document.keys().next().map(String::as_str)
 }
 
-pub(crate) fn update_document_check(update: &Document) -> Result<()> {
-    match first_key(update) {
+pub(crate) fn update_document_check(first_key: Option<&str>) -> Result<()> {
+    match first_key {
         Some(key) => {
             if !key.starts_with('$') {
                 Err(ErrorKind::InvalidArgument {

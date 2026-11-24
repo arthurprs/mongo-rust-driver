@@ -174,6 +174,30 @@ pub enum UpdateModifications {
 
     /// An aggregation pipeline.
     Pipeline(Vec<Document>),
+
+    /// A BSON-encoded document that contains only update operator expressions.
+    RawDocument(RawDocumentBuf),
+}
+
+impl UpdateModifications {
+    pub(crate) fn validate(&self) -> Result<()> {
+        let first_key = match self {
+            Self::Document(document) => crate::bson_util::first_key(document),
+            Self::RawDocument(document) => document
+                .iter_elements()
+                .next()
+                .transpose()?
+                .map(|element| crate::bson_compat::cstr_to_str(element.key())),
+            Self::Pipeline(_) => return Ok(()),
+        };
+        crate::bson_util::update_document_check(first_key)
+    }
+}
+
+impl From<RawDocumentBuf> for UpdateModifications {
+    fn from(document: RawDocumentBuf) -> Self {
+        Self::RawDocument(document)
+    }
 }
 
 impl From<Document> for UpdateModifications {

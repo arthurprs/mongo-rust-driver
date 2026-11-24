@@ -8,12 +8,7 @@ use typed_builder::TypedBuilder;
 use crate::{
     bson::{rawdoc, Array, Bson, Document, RawDocumentBuf},
     bson_compat::{cstr, serialize_to_raw_document_buf},
-    bson_util::{
-        extend_raw_document_buf,
-        get_or_prepend_id_field,
-        replacement_document_check,
-        update_document_check,
-    },
+    bson_util::{extend_raw_document_buf, get_or_prepend_id_field, replacement_document_check},
     error::{Error, Result},
     options::{UpdateModifications, WriteConcern},
     serde_util::serialize_bool_or_true,
@@ -385,18 +380,31 @@ impl WriteModel {
         // i32::MAX, so this should never fail.
         let index = i32::try_from(ns_info_index)
             .map_err(|_| Error::internal("nsInfo index exceeds i32::MAX"))?;
-        let mut ops_document = rawdoc! { self.operation_name(): index };
-
         if let Self::UpdateOne(UpdateOneModel { update, .. })
         | Self::UpdateMany(UpdateManyModel { update, .. }) = self
         {
-            if let UpdateModifications::Document(update_document) = update {
-                update_document_check(update_document)?;
+            update.validate()?;
+            if matches!(update, UpdateModifications::RawDocument(_)) {
+                #[derive(Serialize)]
+                struct RawUpdateOperation<'a> {
+                    update: i32,
+                    multi: bool,
+                    #[serde(flatten)]
+                    model: &'a WriteModel,
+                }
+
+                let operation = RawUpdateOperation {
+                    update: index,
+                    multi: matches!(self, Self::UpdateMany(_)),
+                    model: self,
+                };
+                return Ok((serialize_to_raw_document_buf(&operation)?, None));
             }
         } else if let Self::ReplaceOne(ReplaceOneModel { replacement, .. }) = self {
             replacement_document_check(replacement)?;
         }
 
+        let mut ops_document = rawdoc! { self.operation_name(): index };
         if let Some(multi) = self.multi() {
             ops_document.append(cstr!("multi"), multi);
         }

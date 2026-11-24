@@ -30,6 +30,9 @@ impl UpdateOrReplace {
                     let raw = RawDocumentBuf::try_from(document)?;
                     doc.append(key, raw);
                 }
+                UpdateModifications::RawDocument(document) => {
+                    doc.append_ref(key, &**document);
+                }
                 UpdateModifications::Pipeline(pipeline) => {
                     let raw = bson_util::to_raw_bson_array(pipeline)?;
                     doc.append(key, raw);
